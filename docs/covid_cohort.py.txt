@@ -1,0 +1,83 @@
+#* covid_cohort:
+#*   desc: creates person level table of all confirmed and possible covid index dates
+#*   ext: py
+#*   inputs:
+#*   - Logic_Liaison_All_patients_fact_day_table_lds
+#* 
+
+def covid_cohort(Logic_Liaison_All_patients_fact_day_table_lds):
+    
+    ###############################################
+    ## Pull cols for COVID Cohort Identification ##
+    ###############################################
+    
+    all_patients_visit_table = Logic_Liaison_All_patients_fact_day_table_lds.select('person_id', 'date', 'PCR_AG_Pos', 'LL_COVID_diagnosis', 'PAX1_NIRMATRELVIR', 'PAX2_RITONAVIR', 'PAXLOVID', 'REMDISIVIR', 'LL_Long_COVID_diagnosis', 'B94_8', 'LL_MISC') \
+        .where(F.col('date') >= "2020-03-01")
+
+    variable1 = "PAX1_NIRMATRELVIR"
+    variable2 = "PAX2_RITONAVIR"
+    same_day_variable = "same_day_occurrence_nirm_rit"
+    all_patients_visit_table = all_patients_visit_table.withColumn(same_day_variable, F.when((F.col(variable1)==1)&(F.col(variable2)==1), 1).otherwise(0))
+    variable3 = "PAXLOVID"
+    variable4 = same_day_variable
+    either_variable = "either_pax_or_same_day_nirm_rit"
+    all_patients_visit_table = all_patients_visit_table.withColumn(either_variable, F.when((F.col(variable3)==1)|(F.col(variable4)==1), 1).otherwise(0))
+    all_patients_visit_table = all_patients_visit_table.drop('PAX1_NIRMATRELVIR', 'PAX2_RITONAVIR', 'same_day_occurrence_nirm_rit', 'PAXLOVID')  
+   
+    ##################################
+    ## Get index based on Test/Diag ##
+    ##################################
+
+    pcr_df = all_patients_visit_table.where(F.col('PCR_AG_Pos') == 1) \
+        .groupby('person_id') \
+        .agg(F.min('date').alias('COVID_first_PCR_or_AG_lab_positive'))
+
+    dx_df = all_patients_visit_table.where(F.col('LL_COVID_diagnosis') == 1) \
+        .groupby('person_id') \
+        .agg(F.min('date').alias('COVID_first_diagnosis_date'))
+
+    long_covid_df = all_patients_visit_table.where(F.col('LL_Long_COVID_diagnosis') == 1) \
+        .groupby('person_id') \
+        .agg(F.min('date').alias('Long_COVID_first_diagnosis_date'))
+
+    B94_8_df = all_patients_visit_table.where(F.col('B94_8') == 1) \
+        .groupby('person_id') \
+        .agg(F.min('date').alias('B94_8_first_diagnosis_date'))
+    
+    pax_df = all_patients_visit_table.where(F.col('either_pax_or_same_day_nirm_rit') == 1) \
+        .groupby('person_id') \
+        .agg(F.min('date').alias('first_pax_date'))
+
+    rem_df = all_patients_visit_table.where(F.col('REMDISIVIR') == 1) \
+        .groupby('person_id') \
+        .agg(F.min('date').alias('first_rem_date'))     
+
+    MISC_df = all_patients_visit_table.where(F.col('LL_MISC') == 1) \
+        .groupby('person_id') \
+        .agg(F.min('date').alias('MISC_first_diagnosis_date')) 
+
+    ######################################
+    ## Combine all possible index dates ##
+    ######################################
+
+    df = pcr_df.join(dx_df, 'person_id', 'outer')
+    df = df.join(long_covid_df, 'person_id', 'outer')  
+    df = df.join(B94_8_df, 'person_id', 'outer')  
+    df = df.join(pax_df, 'person_id', 'outer')
+    df = df.join(rem_df, 'person_id', 'outer')
+    df = df.join(MISC_df, 'person_id', 'outer')
+ 
+    ##############################
+    ## Find Earliest Index Date ##
+    ##############################
+
+    #add a column for the earlier of the diagnosis and lab test dates for all confirmed covid patients
+    df = df.withColumn("COVID_first_poslab_or_diagnosis_date", F.least(df.COVID_first_PCR_or_AG_lab_positive, df.COVID_first_diagnosis_date))
+    
+    return df
+    
+
+#################################################
+## Global imports and functions included below ##
+#################################################
+from pyspark.sql import functions as F
